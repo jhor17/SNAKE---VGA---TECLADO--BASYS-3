@@ -1,0 +1,250 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+entity snake_ps2_top is
+    Port ( 
+        CLK     : in  STD_LOGIC;     -- Reloj de 100MHz
+        RESET   : in  STD_LOGIC;     -- Switch 0 para reiniciar
+        PS2_CLK : in  STD_LOGIC;     -- Clock del PS/2 (Pin C17)
+        PS2_DAT : in  STD_LOGIC;     -- Datos del PS/2 (Pin B17)
+        H_SYNC  : out STD_LOGIC;
+        V_SYNC  : out STD_LOGIC;
+        VGA_R   : out STD_LOGIC_VECTOR (3 downto 0);
+        VGA_G   : out STD_LOGIC_VECTOR (3 downto 0);
+        VGA_B   : out STD_LOGIC_VECTOR (3 downto 0)
+    );
+end snake_ps2_top;
+
+architecture Behavioral of snake_ps2_top is
+
+    -- === CONSTANTES DEL JUEGO ===
+    constant SNAKE_SIZE : integer := 20;  
+    constant MAX_LEN    : integer := 50;  
+    
+    constant X_MIN : integer := 20;      
+    constant X_MAX : integer := 620;     
+    constant Y_MIN : integer := 20;      
+    constant Y_MAX : integer := 460;     
+
+    constant X_BLOCKS : integer := (X_MAX - X_MIN) / SNAKE_SIZE; 
+    constant Y_BLOCKS : integer := (Y_MAX - Y_MIN) / SNAKE_SIZE; 
+
+    -- === SEÑALES INTERNAS ===
+    signal clk_25MHz : std_logic := '0';
+    signal clk_div   : unsigned(1 downto 0) := (others => '0');
+    
+    -- Señales VGA
+    signal video_on : std_logic;
+    signal p_x, p_y : std_logic_vector(9 downto 0);
+    signal pix_x, pix_y : unsigned(9 downto 0);
+
+    -- Señales PS/2
+    signal scancode : STD_LOGIC_VECTOR(7 downto 0); 
+    signal new_data : STD_LOGIC;                    
+    
+    -- Lógica de la Serpiente
+    type snake_arr is array(0 to MAX_LEN-1) of integer;
+    signal body_x : snake_arr := (others => 0);
+    signal body_y : snake_arr := (others => 0);
+    signal head_x : integer range 0 to 640 := 320;
+    signal head_y : integer range 0 to 480 := 240;
+    signal curr_len : integer range 1 to MAX_LEN := 1;  
+    signal apple_x : integer range 0 to 640 := 100;
+    signal apple_y : integer range 0 to 480 := 100;
+    
+    -- Generador Aleatorio (Pseudo-Random)
+    signal rand_x : integer range X_MIN to X_MAX := X_MIN;
+    signal rand_y : integer range Y_MIN to Y_MAX := Y_MIN;
+    
+    -- Control de Juego (Velocidad: ~10Hz)
+    signal move_counter : integer range 0 to 16000000 := 0; 
+    signal move_tick    : std_logic := '0';
+    signal direction    : integer range 0 to 4 := 0; 
+    signal reset_game   : std_logic := '0';
+
+begin
+    
+    -- INSTANCIACIONES
+    
+    -- 1. Divisor de Reloj para VGA
+    process(CLK)
+    begin
+        if rising_edge(CLK) then
+            clk_div <= clk_div + 1;
+        end if;
+    end process;
+    clk_25MHz <= clk_div(1);
+
+    -- 2. Instancia del Controlador VGA
+    vga_instance: entity work.vga_controller
+    port map(
+        clk_25MHz => clk_25MHz, reset => RESET,
+        h_sync => H_SYNC, v_sync => V_SYNC, video_on => video_on,
+        pixel_x => p_x, pixel_y => p_y
+    );
+    pix_x <= unsigned(p_x);
+    pix_y <= unsigned(p_y);
+
+    -- 3. Instancia del Controlador PS/2
+    ps2_inst: entity work.ps2_controller
+    port map(
+        CLK     => CLK, 
+        PS2_CLK => PS2_CLK, 
+        PS2_DAT => PS2_DAT, 
+        SCANCODE=> scancode, 
+        NEW_DATA=> new_data
+    );
+
+    -- 4. Contadores para Random
+    process(CLK)
+    begin
+        if rising_edge(CLK) then
+            if rand_x >= X_MAX - SNAKE_SIZE then rand_x <= X_MIN; else rand_x <= rand_x + 1; end if;
+            if rand_y >= Y_MAX - SNAKE_SIZE then rand_y <= Y_MIN; else rand_y <= rand_y + 1; end if;
+        end if;
+    end process;
+
+    -- 5. Lógica Principal del Juego
+    process(CLK)
+    begin
+        if rising_edge(CLK) then
+            if RESET = '1' or reset_game = '1' then 
+                -- Reset
+                head_x <= 320; 
+                head_y <= 240;
+                curr_len <= 1; 
+                direction <= 0;
+                reset_game <= '0';
+                for i in 0 to MAX_LEN-1 loop
+                    body_x(i) <= 0; body_y(i) <= 0;
+                end loop;
+                
+                apple_x <= ((rand_x mod X_BLOCKS) * SNAKE_SIZE) + X_MIN; 
+                apple_y <= ((rand_y mod Y_BLOCKS) * SNAKE_SIZE) + Y_MIN;
+
+            else
+                
+                -- RELOJ DE MOVIMIENTO (10Hz)
+                if move_counter < 15000000 then 
+                    move_counter <= move_counter + 1;
+                    move_tick <= '0';
+                else
+                    move_counter <= 0;
+                    move_tick <= '1';
+                end if;
+
+                -- LÓGICA DE CONTROL POR TECLADO PS/2 (W, A, S, D) 
+                if new_data = '1' and scancode /= x"F0" then
+                    
+                    -- Scancodes: W=1D, S=1B, A=1C, D=23
+                    if scancode = x"1D" and direction /= 2 then 
+                        direction <= 1; -- ARRIBA (W)
+                    elsif scancode = x"1B" and direction /= 1 then 
+                        direction <= 2; -- ABAJO (S)
+                    elsif scancode = x"1C" and direction /= 4 then 
+                        direction <= 3; -- IZQUIERDA (A)
+                    elsif scancode = x"23" and direction /= 3 then 
+                        direction <= 4; -- DERECHA (D)
+                    end if;
+                end if;
+
+
+                -- MOVIMIENTO Y COLISIONES (solo en el tick de movimiento)
+                if move_tick = '1' and direction /= 0 then
+                    
+                    -- Mover Cuerpo
+                    body_x(0) <= head_x; 
+                    body_y(0) <= head_y;
+                    for i in 1 to MAX_LEN-1 loop
+                        if i < curr_len then
+                            body_x(i) <= body_x(i-1);
+                            body_y(i) <= body_y(i-1);
+                        end if;
+                    end loop;
+
+                    -- Mover Cabeza
+                    case direction is
+                        when 1 => head_y <= head_y - SNAKE_SIZE; 
+                        when 2 => head_y <= head_y + SNAKE_SIZE; 
+                        when 3 => head_x <= head_x - SNAKE_SIZE; 
+                        when 4 => head_x <= head_x + SNAKE_SIZE; 
+                        when others => null;
+                    end case;
+
+                    -- Colisión Manzana
+                    if (abs(head_x - apple_x) < SNAKE_SIZE) and (abs(head_y - apple_y) < SNAKE_SIZE) then
+                        if curr_len < MAX_LEN then
+                            curr_len <= curr_len + 1;
+                        end if;
+                        apple_x <= ((rand_x mod X_BLOCKS) * SNAKE_SIZE) + X_MIN; 
+                        apple_y <= ((rand_y mod Y_BLOCKS) * SNAKE_SIZE) + Y_MIN;
+                    end if;
+
+                    -- Colisión Paredes
+                    if (head_x < X_MIN) or (head_x >= X_MAX) or 
+                       (head_y < Y_MIN) or (head_y >= Y_MAX) then
+                        reset_game <= '1';
+                    end if;
+
+                    -- Colisión con Cuerpo
+                    if curr_len > 2 then
+                        for i in 1 to MAX_LEN-1 loop
+                            if i < curr_len - 1 then 
+                                if (head_x = body_x(i)) and (head_y = body_y(i)) then
+                                    reset_game <= '1';
+                                end if;
+                            end if;
+                        end loop;
+                    end if;
+                    
+                end if; -- Fin de move_tick = '1'
+            end if; 
+        end if;
+    end process;
+
+    -- 6. Generador de Píxeles (Dibujo)
+    process(video_on, pix_x, pix_y, head_x, head_y, apple_x, apple_y, body_x, body_y)
+        variable is_body : boolean;
+    begin
+        if video_on = '1' then
+            is_body := false;
+            
+            -- Marco Blanco
+            if (pix_x < X_MIN or pix_x >= X_MAX) or 
+               (pix_y < Y_MIN or pix_y >= Y_MAX) then
+                VGA_R <= "1111"; VGA_G <= "1111"; VGA_B <= "1111"; 
+            
+            -- Manzana Roja
+            elsif (pix_x >= apple_x and pix_x < apple_x + SNAKE_SIZE) and
+                  (pix_y >= apple_y and pix_y < apple_y + SNAKE_SIZE) then
+                VGA_R <= "1111"; VGA_G <= "0000"; VGA_B <= "0000"; 
+            
+            -- Cabeza y Cuerpo (Verde)
+            elsif (pix_x >= head_x and pix_x < head_x + SNAKE_SIZE) and
+                  (pix_y >= head_y and pix_y < head_y + SNAKE_SIZE) then
+                 VGA_R <= "0000"; VGA_G <= "1111"; VGA_B <= "0000"; 
+            
+            else
+                -- Dibujo del Cuerpo
+                for i in 0 to MAX_LEN-1 loop
+                    if i < curr_len then
+                        if (pix_x >= body_x(i) and pix_x < body_x(i) + SNAKE_SIZE) and
+                           (pix_y >= body_y(i) and pix_y < body_y(i) + SNAKE_SIZE) then
+                            is_body := true;
+                        end if;
+                    end if;
+                end loop;
+
+                if is_body then
+                    VGA_R <= "0000"; VGA_G <= "1111"; VGA_B <= "0000"; 
+                else
+                    VGA_R <= "0000"; VGA_G <= "0000"; VGA_B <= "0000"; -- Fondo Negro
+                end if;
+            end if;
+        else
+            VGA_R <= "0000"; VGA_G <= "0000"; VGA_B <= "0000";
+        end if;
+    end process;
+
+end Behavioral;
