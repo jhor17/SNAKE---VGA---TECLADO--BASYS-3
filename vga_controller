@@ -1,0 +1,66 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+entity vga_controller is
+    Port ( 
+        clk_25MHz : in  STD_LOGIC;
+        reset     : in  STD_LOGIC;
+        h_sync    : out STD_LOGIC;
+        v_sync    : out STD_LOGIC;
+        video_on  : out STD_LOGIC;
+        pixel_x   : out STD_LOGIC_VECTOR (9 downto 0);
+        pixel_y   : out STD_LOGIC_VECTOR (9 downto 0)
+    );
+end vga_controller;
+
+architecture Behavioral of vga_controller is
+    -- Constantes para VGA 640x480 @ 60Hz
+    constant HD : integer := 640;   -- Horizontal Display
+    constant HF : integer := 16;    -- Front Porch
+    constant HB : integer := 48;    -- Back Porch
+    constant HR : integer := 96;    -- Retrace (Sync Pulse)
+    constant H_TOTAL : integer := HD + HF + HB + HR; -- 800
+    
+    constant VD : integer := 480;   -- Vertical Display
+    constant VF : integer := 10;    -- Front Porch
+    constant VB : integer := 33;    -- Back Porch
+    constant VR : integer := 2;     -- Retrace
+    constant V_TOTAL : integer := VD + VF + VB + VR; -- 525
+
+    signal h_count : integer range 0 to H_TOTAL-1 := 0;
+    signal v_count : integer range 0 to V_TOTAL-1 := 0;
+
+begin
+    -- Contadores Horizontal y Vertical
+    process(clk_25MHz, reset)
+    begin
+        if reset = '1' then
+            h_count <= 0;
+            v_count <= 0;
+        elsif rising_edge(clk_25MHz) then
+            if h_count = (H_TOTAL - 1) then
+                h_count <= 0;
+                if v_count = (V_TOTAL - 1) then
+                    v_count <= 0;
+                else
+                    v_count <= v_count + 1;
+                end if;
+            else
+                h_count <= h_count + 1;
+            end if;
+        end if;
+    end process;
+
+    -- Generación de señales de sincronización
+    h_sync <= '0' when (h_count >= (HD + HF)) and (h_count < (HD + HF + HR)) else '1';
+    v_sync <= '0' when (v_count >= (VD + VF)) and (v_count < (VD + VF + VR)) else '1';
+
+    -- Video On (Solo pintar cuando estamos en el área visible)
+    video_on <= '1' when (h_count < HD) and (v_count < VD) else '0';
+
+    -- Coordenadas actuales del pixel
+    pixel_x <= std_logic_vector(to_unsigned(h_count, 10));
+    pixel_y <= std_logic_vector(to_unsigned(v_count, 10));
+
+end Behavioral;
