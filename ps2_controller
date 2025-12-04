@@ -1,0 +1,99 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+entity ps2_controller is
+    Port ( 
+        CLK     : in  STD_LOGIC;     -- Reloj de 100MHz
+        PS2_CLK : in  STD_LOGIC;     -- Señal de Reloj PS/2
+        PS2_DAT : in  STD_LOGIC;     -- Señal de Datos PS/2
+        SCANCODE: out STD_LOGIC_VECTOR (7 downto 0); -- Código de la tecla
+        NEW_DATA: out STD_LOGIC                      -- Pulso cuando hay un nuevo código
+    );
+end ps2_controller;
+
+architecture Behavioral of ps2_controller is
+
+    -- === ESTABILIZACIÓN DEL RELOJ PS/2 ===
+    -- Se usan registros dobles para crear un detector de flanco síncrono.
+    signal PS2_CLK_R1 : STD_LOGIC := '1';
+    signal PS2_CLK_R2 : STD_LOGIC := '1';
+    signal FALLING_EDGE : STD_LOGIC := '0'; -- Pulso en el flanco de bajada
+    
+    -- === MÁQUINA DE ESTADOS Y REGISTROS ===
+    type state_type is (IDLE, START_BIT, DATA_BITS, PARITY_BIT, STOP_BIT);
+    signal current_state : state_type := IDLE;
+
+    signal bit_counter     : integer range 0 to 7 := 0;
+    signal rx_buffer       : STD_LOGIC_VECTOR (7 downto 0) := (others => '0');
+    
+    signal scancode_temp   : STD_LOGIC_VECTOR (7 downto 0) := (others => '0');
+    signal new_data_temp   : STD_LOGIC := '0';
+
+begin
+
+    -- 1. SINCRONIZADOR DE FLANCO 
+    -- Este proceso asegura que el flanco de bajada de PS2_CLK sea capturado de forma síncrona
+    -- por el reloj de alta velocidad (CLK).
+    process(CLK)
+    begin
+        if rising_edge(CLK) then
+            -- Sincronización del PS2_CLK (Anticipa el cambio)
+            PS2_CLK_R1 <= PS2_CLK;
+            PS2_CLK_R2 <= PS2_CLK_R1;
+            
+            -- Detección de flanco de bajada: PS2_CLK_R1 pasa de '1' a '0'
+            -- y PS2_CLK_R2 estaba en '1' (lo que estabiliza la detección).
+            FALLING_EDGE <= (PS2_CLK_R2 and (not PS2_CLK_R1));
+        end if;
+    end process;
+    
+    -- 2. MÁQUINA DE ESTADOS PS/2
+    process(CLK)
+    begin
+        if rising_edge(CLK) then
+            new_data_temp <= '0'; -- Reiniciar pulso
+            
+            -- La lógica de avance de estados ahora se dispara con el pulso FALLING_EDGE
+            if FALLING_EDGE = '1' then
+            
+                case current_state is
+                    when IDLE =>
+                        if PS2_DAT = '0' then -- Start Bit
+                            bit_counter <= 0;
+                            current_state <= DATA_BITS;
+                        end if;
+                        
+                    when DATA_BITS =>
+                        rx_buffer(bit_counter) <= PS2_DAT;
+                        if bit_counter = 7 then
+                            bit_counter <= 0;
+                            current_state <= PARITY_BIT;
+                        else
+                            bit_counter <= bit_counter + 1;
+                        end if;
+                        
+                    when PARITY_BIT =>
+                        current_state <= STOP_BIT;
+                        
+                    when STOP_BIT =>
+                        if PS2_DAT = '1' then -- Stop Bit debe ser '1'
+                            scancode_temp <= rx_buffer;
+                            new_data_temp <= '1';
+                            current_state <= IDLE;
+                        else
+                            current_state <= IDLE;
+                        end if;
+                        
+                    when others => current_state <= IDLE;
+                        
+                end case;
+            end if; -- Fin de if FALLING_EDGE = '1'
+
+        end if;
+    end process;
+    
+    SCANCODE <= scancode_temp;
+    NEW_DATA <= new_data_temp;
+
+end Behavioral;
